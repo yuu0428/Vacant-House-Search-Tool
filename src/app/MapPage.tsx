@@ -49,6 +49,7 @@ export function MapPage() {
   const pendingGapRef = useRef(false)
   const defaultCenterRef = useRef<[number, number]>([138.568321, 35.667331])
   const photoInputRef = useRef<HTMLInputElement | null>(null)
+  const lastAcceptedPositionRef = useRef<{ lat: number; lng: number } | undefined>(undefined)
   const [isFollowing, setIsFollowing] = useState(true)
   const [pendingLocation, setPendingLocation] = useState<PendingLocation | null>(null)
   const [pendingAddress, setPendingAddress] = useState<string>('')
@@ -180,6 +181,7 @@ export function MapPage() {
       }
       pendingGapRef.current = true
       lastStoredRef.current = undefined
+      lastAcceptedPositionRef.current = undefined
       return
     }
     if (!('geolocation' in navigator)) {
@@ -194,8 +196,19 @@ export function MapPage() {
         const { latitude, longitude, accuracy } = position.coords
         const timestamp = position.timestamp
         const now = Date.now()
+        const candidate = { lat: latitude, lng: longitude }
+        const previousAccepted = lastAcceptedPositionRef.current
+        if (previousAccepted && typeof accuracy === 'number') {
+          const moveDistance = haversineDistanceMeters(previousAccepted, candidate)
+          const dynamicThreshold = Math.max(accuracy * 0.8, 3)
+          if (accuracy > 40 && moveDistance < dynamicThreshold) {
+            return
+          }
+        }
+
         const point = { lat: latitude, lng: longitude, timestamp: now }
         setCurrentPosition({ lat: latitude, lng: longitude, accuracy, timestamp })
+        lastAcceptedPositionRef.current = candidate
         const previous = lastStoredRef.current
         const shouldStore = shouldStorePoint({
           previous,
