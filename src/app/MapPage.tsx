@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import maplibregl from 'maplibre-gl'
 import { Fab } from '../components/Fab'
 import { MapAttribution } from '../components/MapAttribution'
@@ -18,6 +18,12 @@ import type { Place, RoutePoint } from '../types'
 interface PendingLocation {
   lat: number
   lng: number
+}
+
+interface PendingPhoto {
+  id: string
+  file: File
+  thumb: string
 }
 
 export function MapPage() {
@@ -42,25 +48,52 @@ export function MapPage() {
   const followUserRef = useRef(true)
   const pendingGapRef = useRef(false)
   const defaultCenterRef = useRef<[number, number]>([138.568321, 35.667331])
+  const photoInputRef = useRef<HTMLInputElement | null>(null)
+  const [isFollowing, setIsFollowing] = useState(true)
   const [pendingLocation, setPendingLocation] = useState<PendingLocation | null>(null)
   const [pendingAddress, setPendingAddress] = useState<string>('')
   const [pendingSource, setPendingSource] = useState<string>('')
-  const [pendingPhoto, setPendingPhoto] = useState<{ blob: Blob; thumb?: string } | null>(null)
+  const [pendingPhotos, setPendingPhotos] = useState<PendingPhoto[]>([])
   const [pendingNote, setPendingNote] = useState('')
   const [modalLoading, setModalLoading] = useState(false)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const openLocationModalRef = useRef<(location: PendingLocation) => void>(() => {})
 
   const todayKey = useMemo(() => toDayKey(new Date()), [])
   const todayPoints = useMemo(() => buckets[todayKey]?.points ?? [], [buckets, todayKey])
+
+  const openLocationModal = useCallback(
+    (location: PendingLocation) => {
+      setPendingLocation(location)
+      setPendingPhotos([])
+      setPendingNote('')
+      setPendingAddress('住所を取得中…')
+      setPendingSource('')
+      setModalLoading(true)
+      setIsModalOpen(true)
+      reverseGeocode(location.lat, location.lng)
+        .then((result) => {
+          setPendingAddress(result.address)
+          setPendingSource(result.source)
+        })
+        .catch(() => {
+          setPendingAddress('住所取得に失敗しました')
+          setPendingSource('エラー')
+        })
+        .finally(() => setModalLoading(false))
+    },
+    [],
+  )
+
+  useEffect(() => {
+    openLocationModalRef.current = openLocationModal
+  }, [openLocationModal])
 
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) {
       return
     }
-    const center: [number, number] = currentPosition
-      ? [currentPosition.lng, currentPosition.lat]
-      : defaultCenterRef.current
-    const map = createBaseMap(mapContainerRef.current, center)
+    const map = createBaseMap(mapContainerRef.current, defaultCenterRef.current)
     mapRef.current = map
 
     const handleLoad = () => {
@@ -68,13 +101,14 @@ export function MapPage() {
       updateRouteGeometry(map, routePointsRef.current)
     }
     const handleClick = (event: maplibregl.MapMouseEvent) => {
-      openLocationModal({ lat: event.lngLat.lat, lng: event.lngLat.lng })
+      openLocationModalRef.current({ lat: event.lngLat.lat, lng: event.lngLat.lng })
     }
 
     map.on('load', handleLoad)
     map.on('click', handleClick)
     const disableFollow = () => {
       followUserRef.current = false
+      setIsFollowing(false)
     }
     map.on('dragstart', disableFollow)
     map.on('zoomstart', disableFollow)
@@ -91,7 +125,7 @@ export function MapPage() {
       map.remove()
       mapRef.current = null
     }
-  }, [currentPosition])
+  }, [])
 
   useEffect(() => {
     routePointsRef.current = todayPoints
@@ -198,6 +232,7 @@ export function MapPage() {
         if (error.code === error.PERMISSION_DENIED) {
           pushToast({ kind: 'error', message: '位置情報の権限が拒否されました' })
           setTracking(false)
+          setIsFollowing(false)
           return
         }
         pushToast({ kind: 'error', message: '位置情報の取得に失敗しました' })
@@ -235,13 +270,27 @@ export function MapPage() {
   const handleToggleTracking = async () => {
     if (isTracking) {
       setTracking(false)
+      setIsFollowing(false)
       return
     }
     await requestOrientationPermission()
     followUserRef.current = true
     pendingGapRef.current = true
     lastStoredRef.current = undefined
+    setIsFollowing(true)
     setTracking(true)
+  }
+
+  const handleResumeFollow = () => {
+    followUserRef.current = true
+    setIsFollowing(true)
+    if (currentPosition && mapRef.current) {
+      mapRef.current.easeTo({
+        center: [currentPosition.lng, currentPosition.lat],
+        zoom: Math.max(mapRef.current.getZoom(), 15),
+        duration: 800,
+      })
+    }
   }
 
   const requestOrientationPermission = async () => {
@@ -260,26 +309,6 @@ export function MapPage() {
     }
   }
 
-  const openLocationModal = (location: PendingLocation) => {
-    setPendingLocation(location)
-    setPendingPhoto(null)
-    setPendingNote('')
-    setPendingAddress('住所を取得中…')
-    setPendingSource('')
-    setModalLoading(true)
-    setIsModalOpen(true)
-    reverseGeocode(location.lat, location.lng)
-      .then((result) => {
-        setPendingAddress(result.address)
-        setPendingSource(result.source)
-      })
-      .catch(() => {
-        setPendingAddress('住所取得に失敗しました')
-        setPendingSource('エラー')
-      })
-      .finally(() => setModalLoading(false))
-  }
-
   const handleSaveHere = () => {
     if (!currentPosition) {
       pushToast({ kind: 'error', message: '現在地が取得できるまでお待ちください' })
@@ -289,18 +318,27 @@ export function MapPage() {
   }
 
   const handlePhotoChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) {
-      setPendingPhoto(null)
+    const files = Array.from(event.target.files ?? [])
+    if (files.length === 0) {
       return
     }
     try {
-      const thumb = await createThumbnailDataUrl(file)
-      setPendingPhoto({ blob: file, thumb })
+      const nextPhotos: PendingPhoto[] = []
+      for (const file of files) {
+        const thumb = await createThumbnailDataUrl(file)
+        nextPhotos.push({ id: crypto.randomUUID(), file, thumb })
+      }
+      setPendingPhotos((prev) => [...prev, ...nextPhotos])
     } catch (error) {
       console.error(error)
       pushToast({ kind: 'error', message: 'サムネイル生成に失敗しました' })
+    } finally {
+      event.target.value = ''
     }
+  }
+
+  const handleRemovePendingPhoto = (id: string) => {
+    setPendingPhotos((prev) => prev.filter((item) => item.id !== id))
   }
 
   const handlePlaceSubmit = async () => {
@@ -308,6 +346,13 @@ export function MapPage() {
       return
     }
     const now = new Date()
+    const baseTime = now.getTime()
+    const photos = pendingPhotos.map((item, index) => ({
+      id: crypto.randomUUID(),
+      createdAtISO: new Date(baseTime + index).toISOString(),
+      blob: item.file,
+      thumbDataURL: item.thumb,
+    }))
     const place: Place = {
       id: crypto.randomUUID(),
       lat: pendingLocation.lat,
@@ -315,12 +360,17 @@ export function MapPage() {
       address: pendingAddress,
       createdAtISO: now.toISOString(),
       note: pendingNote.trim() || undefined,
-      photoBlob: pendingPhoto?.blob,
-      thumbDataURL: pendingPhoto?.thumb,
+      photos,
     }
     await addPlace(place)
     pushToast({ kind: 'info', message: '地点を保存しました' })
     setIsModalOpen(false)
+    setPendingPhotos([])
+  }
+
+  const handleModalClose = () => {
+    setIsModalOpen(false)
+    setPendingPhotos([])
   }
 
   return (
@@ -329,6 +379,15 @@ export function MapPage() {
       <MapAttribution />
       <div className="pointer-events-none absolute inset-x-0 bottom-24 flex flex-col items-end gap-3 px-4">
         <div className="pointer-events-auto flex flex-col gap-3">
+          {!isFollowing && isTracking ? (
+            <button
+              type="button"
+              onClick={handleResumeFollow}
+              className="self-end rounded-full border border-sky-300 bg-white px-4 py-2 text-xs font-semibold text-sky-600 shadow-sm shadow-sky-200"
+            >
+              現在地を追尾
+            </button>
+          ) : null}
           <Fab
             label={isTracking ? '追跡を停止' : '追跡を開始'}
             onClick={handleToggleTracking}
@@ -341,13 +400,13 @@ export function MapPage() {
       <Modal
         open={isModalOpen}
         title="地点を保存"
-        onClose={() => setIsModalOpen(false)}
+        onClose={handleModalClose}
         footer={
           <>
             <button
               type="button"
               className="rounded-full border border-slate-300 px-4 py-2 text-sm"
-              onClick={() => setIsModalOpen(false)}
+              onClick={handleModalClose}
             >
               キャンセル
             </button>
@@ -377,24 +436,37 @@ export function MapPage() {
               </p>
             </div>
             <div className="grid gap-2">
-              <label className="text-sm font-semibold text-slate-700" htmlFor="place-photo">
-                写真（任意）
-              </label>
-              <input
-                id="place-photo"
-                type="file"
-                accept="image/*"
-                capture="environment"
-                onChange={handlePhotoChange}
-                className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              />
-              {pendingPhoto?.thumb ? (
-                <img
-                  src={pendingPhoto.thumb}
-                  alt="サムネイル"
-                  className="h-32 w-32 rounded-lg object-cover"
+              <span className="text-sm font-semibold text-slate-700">写真（任意）</span>
+              <div className="flex flex-wrap gap-3">
+                {pendingPhotos.map((photo) => (
+                  <div key={photo.id} className="relative h-24 w-24 overflow-hidden rounded-xl border border-slate-200">
+                    <img src={photo.thumb} alt="選択した写真" className="h-full w-full object-cover" />
+                    <button
+                      type="button"
+                      className="absolute right-1 top-1 rounded-full bg-black/60 px-1 text-[10px] text-white"
+                      onClick={() => handleRemovePendingPhoto(photo.id)}
+                    >
+                      ×
+                    </button>
+                  </div>
+                ))}
+                <button
+                  type="button"
+                  className="flex h-24 w-24 items-center justify-center rounded-xl border border-dashed border-sky-300 bg-sky-50 text-xs font-semibold text-sky-600"
+                  onClick={() => photoInputRef.current?.click()}
+                >
+                  写真を追加
+                </button>
+                <input
+                  ref={photoInputRef}
+                  id="place-photo"
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  onChange={handlePhotoChange}
+                  className="hidden"
                 />
-              ) : null}
+              </div>
             </div>
             <div className="grid gap-2">
               <label className="text-sm font-semibold text-slate-700" htmlFor="place-note">

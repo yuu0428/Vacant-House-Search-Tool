@@ -2,8 +2,21 @@ import JSZip from 'jszip'
 import { clearDatabase, exportDatabase, importDatabase } from './db'
 import type { Place } from '../types'
 
-interface ExportedPlace extends Omit<Place, 'photoBlob'> {
+interface ExportedPhoto {
+  id: string
+  createdAtISO: string
+  thumbDataURL?: string
   photoPath?: string
+}
+
+interface ExportedPlace {
+  id: string
+  lat: number
+  lng: number
+  address: string
+  createdAtISO: string
+  note?: string
+  photos: ExportedPhoto[]
 }
 
 interface ExportEnvelope {
@@ -26,12 +39,25 @@ interface ExportOptions {
 type ExportPayload = Awaited<ReturnType<typeof exportDatabase>>
 
 function buildEnvelope(payload: ExportPayload, options: ExportOptions): ExportEnvelope {
-  const places: ExportedPlace[] = payload.places.map((place, index) => {
-    const { photoBlob, thumbDataURL, ...rest } = place
+  const places: ExportedPlace[] = payload.places.map((place) => {
+    const photos: ExportedPhoto[] = place.photos.map((photo) => ({
+      id: photo.id,
+      createdAtISO: photo.createdAtISO,
+      thumbDataURL: options.includeThumbnails ? photo.thumbDataURL : undefined,
+      photoPath:
+        options.includeOriginals && photo.blob
+          ? `media/${place.id}/${photo.id}.jpg`
+          : undefined,
+    }))
+
     return {
-      ...rest,
-      thumbDataURL: options.includeThumbnails ? thumbDataURL : undefined,
-      photoPath: options.includeOriginals && photoBlob ? `media/${rest.id || index}.jpg` : undefined,
+      id: place.id,
+      lat: place.lat,
+      lng: place.lng,
+      address: place.address,
+      createdAtISO: place.createdAtISO,
+      note: place.note,
+      photos,
     }
   })
   return {
@@ -49,7 +75,7 @@ function filterPayload(payload: ExportPayload, selectedIds?: string[]): ExportPa
   const idSet = new Set(selectedIds)
   return {
     places: payload.places.filter((place) => idSet.has(place.id)),
-    routes: [],
+    routes: payload.routes,
     exportedAtISO: payload.exportedAtISO,
     schemaVersion: payload.schemaVersion,
   }
@@ -76,16 +102,24 @@ export async function createZipExport(
   const zip = new JSZip()
   zip.file('walktrace.json', JSON.stringify(envelope, null, 2))
   await Promise.all(
-    payload.places.map(async (place, index) => {
-      if (!options.includeOriginals || !place.photoBlob) {
+    payload.places.map(async (place) => {
+      if (!options.includeOriginals) {
         return
       }
-      const path = envelope.places[index]?.photoPath
-      if (!path) {
+      const target = envelope.places.find((item) => item.id === place.id)
+      if (!target) {
         return
       }
-      const arrayBuffer = await place.photoBlob.arrayBuffer()
-      zip.file(path, arrayBuffer)
+      await Promise.all(
+        place.photos.map(async (photo, index) => {
+          const path = target.photos[index]?.photoPath
+          if (!path || !photo.blob) {
+            return
+          }
+          const arrayBuffer = await photo.blob.arrayBuffer()
+          zip.file(path, arrayBuffer)
+        }),
+      )
     }),
   )
   const blob = await zip.generateAsync({ type: 'blob' })
@@ -126,7 +160,18 @@ async function loadJsonBundle(file: File): Promise<ImportBundle> {
         envelope.places
           .filter((place) => (idSet ? idSet.has(place.id) : true))
           .map(async (place) => {
-            const dataURLBlob = place.thumbDataURL ? dataUrlToBlob(place.thumbDataURL) : undefined
+            const photosFromExport = Array.isArray(place.photos) ? place.photos : []
+            const legacyThumb = (place as { thumbDataURL?: string }).thumbDataURL
+            const legacyPhotoPath = (place as { photoPath?: string }).photoPath
+            const legacyPhotos = !photosFromExport.length && (legacyThumb || legacyPhotoPath)
+              ? [{
+                  id: `${place.id}-legacy`,
+                  createdAtISO: place.createdAtISO,
+                  thumbDataURL: legacyThumb,
+                  photoPath: legacyPhotoPath,
+                }]
+              : []
+            const photos = [...photosFromExport, ...legacyPhotos]
             return {
               id: place.id,
               lat: place.lat,
@@ -134,8 +179,11 @@ async function loadJsonBundle(file: File): Promise<ImportBundle> {
               address: place.address,
               createdAtISO: place.createdAtISO,
               note: place.note ?? undefined,
-              thumbDataURL: place.thumbDataURL,
-              photoBlob: dataURLBlob,
+              photos: photos.map((photo) => ({
+                id: photo.id,
+                createdAtISO: photo.createdAtISO ?? place.createdAtISO,
+                thumbDataURL: photo.thumbDataURL,
+              })),
             }
           }),
       )
@@ -151,12 +199,6 @@ async function loadZipBundle(file: File): Promise<ImportBundle> {
   }
   const jsonText = await jsonFile.async('string')
   const envelope = JSON.parse(jsonText) as ExportEnvelope
-  const photoMap = new Map<string, string>()
-  envelope.places.forEach((place) => {
-    if (place.photoPath) {
-      photoMap.set(place.id, place.photoPath)
-    }
-  })
   return {
     envelope,
     async toPlaces(filterIds) {
@@ -165,21 +207,46 @@ async function loadZipBundle(file: File): Promise<ImportBundle> {
         envelope.places
           .filter((place) => (idSet ? idSet.has(place.id) : true))
           .map(async (place) => {
-            const { photoPath, ...rest } = place
-            let photoBlob: Blob | undefined
-            if (photoPath) {
-              const entry = zip.file(photoPath)
-              if (entry) {
-                photoBlob = await entry.async('blob')
-              }
-            }
-            if (!photoBlob && place.thumbDataURL) {
-              photoBlob = dataUrlToBlob(place.thumbDataURL)
-            }
+            const exportedPhotos = Array.isArray(place.photos) ? place.photos : []
+            const legacyPath = (place as { photoPath?: string }).photoPath
+            const legacyThumb = (place as { thumbDataURL?: string }).thumbDataURL
+            const photosSource = exportedPhotos.length
+              ? exportedPhotos
+              : legacyPath || legacyThumb
+              ? [{
+                  id: `${place.id}-legacy`,
+                  createdAtISO: place.createdAtISO,
+                  photoPath: legacyPath,
+                  thumbDataURL: legacyThumb,
+                }]
+              : []
             return {
-              ...rest,
+              id: place.id,
+              lat: place.lat,
+              lng: place.lng,
+              address: place.address,
+              createdAtISO: place.createdAtISO,
               note: place.note ?? undefined,
-              photoBlob,
+              photos: await Promise.all(
+                photosSource.map(async (photo) => {
+                  let blob: Blob | undefined
+                  if (photo.photoPath) {
+                    const entry = zip.file(photo.photoPath)
+                    if (entry) {
+                      blob = await entry.async('blob')
+                    }
+                  }
+                  if (!blob && photo.thumbDataURL) {
+                    blob = dataUrlToBlob(photo.thumbDataURL)
+                  }
+                  return {
+                    id: photo.id,
+                    createdAtISO: photo.createdAtISO ?? place.createdAtISO,
+                    blob,
+                    thumbDataURL: photo.thumbDataURL,
+                  }
+                }),
+              ),
             }
           }),
       )

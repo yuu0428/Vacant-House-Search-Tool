@@ -26,7 +26,8 @@ export function ListPage() {
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const detailMapRef = useRef<maplibregl.Map | null>(null)
   const detailMarkerRef = useRef<maplibregl.Marker | null>(null)
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const detailPhotoUrlsRef = useRef<Array<{ url: string; isObjectUrl: boolean }>>([])
+  const [detailPhotos, setDetailPhotos] = useState<Array<{ id: string; url: string; isObjectUrl: boolean }>>([])
 
   useEffect(() => {
     if (!selected || !mapContainerRef.current) {
@@ -54,21 +55,52 @@ export function ListPage() {
   }, [selected])
 
   useEffect(() => {
+    detailPhotoUrlsRef.current.forEach((photo) => {
+      if (photo.isObjectUrl) {
+        URL.revokeObjectURL(photo.url)
+      }
+    })
+    detailPhotoUrlsRef.current = []
     if (!selected) {
-      setPreviewUrl(null)
+      setDetailPhotos([])
+      setMemoDraft('')
       return () => {}
     }
     setMemoDraft(selected.note ?? '')
-    if (selected.photoBlob && !selected.thumbDataURL) {
-      const objectUrl = URL.createObjectURL(selected.photoBlob)
-      setPreviewUrl(objectUrl)
-      return () => {
-        URL.revokeObjectURL(objectUrl)
+    const generated: Array<{ id: string; url: string; isObjectUrl: boolean }> = []
+    selected.photos.forEach((photo) => {
+      if (photo.blob) {
+        const url = URL.createObjectURL(photo.blob)
+        generated.push({ id: photo.id, url, isObjectUrl: true })
+        return
       }
+      if (photo.thumbDataURL) {
+        generated.push({ id: photo.id, url: photo.thumbDataURL, isObjectUrl: false })
+        return
+      }
+      generated.push({ id: photo.id, url: '', isObjectUrl: false })
+    })
+    setDetailPhotos(generated)
+    detailPhotoUrlsRef.current = generated.map((photo) => ({ url: photo.url, isObjectUrl: photo.isObjectUrl }))
+    return () => {
+      generated.forEach((photo) => {
+        if (photo.isObjectUrl) {
+          URL.revokeObjectURL(photo.url)
+        }
+      })
     }
-    setPreviewUrl(null)
-    return () => {}
   }, [selected])
+
+  useEffect(() => {
+    return () => {
+      detailPhotoUrlsRef.current.forEach((photo) => {
+        if (photo.isObjectUrl) {
+          URL.revokeObjectURL(photo.url)
+        }
+      })
+      detailPhotoUrlsRef.current = []
+    }
+  }, [])
 
   const handleCardClick = (place: Place) => {
     setSelected(place)
@@ -114,8 +146,12 @@ export function ListPage() {
                 onClick={() => handleCardClick(place)}
                 className="flex w-full items-center gap-3 rounded-2xl bg-white p-3 text-left shadow-sm shadow-slate-200 transition hover:shadow-md"
               >
-                {place.thumbDataURL ? (
-                  <img src={place.thumbDataURL} alt="サムネイル" className="h-16 w-16 rounded-xl object-cover" />
+                {place.photos[0]?.thumbDataURL ? (
+                  <img
+                    src={place.photos[0].thumbDataURL}
+                    alt="サムネイル"
+                    className="h-16 w-16 rounded-xl object-cover"
+                  />
                 ) : (
                   <div className="flex h-16 w-16 items-center justify-center rounded-xl bg-slate-200 text-xs text-slate-500">
                     写真なし
@@ -167,12 +203,20 @@ export function ListPage() {
           <div className="space-y-4">
             <section className="space-y-2">
               <h3 className="text-sm font-semibold text-slate-700">撮影メディア</h3>
-              {selected.photoBlob || selected.thumbDataURL ? (
-                <img
-                  src={selected.thumbDataURL ?? previewUrl ?? ''}
-                  alt="保存した写真"
-                  className="w-full rounded-xl object-cover"
-                />
+              {detailPhotos.length > 0 ? (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {detailPhotos.map((photo) => (
+                    <div key={photo.id} className="overflow-hidden rounded-xl border border-slate-200">
+                      {photo.url ? (
+                        <img src={photo.url} alt="保存した写真" className="h-full w-full object-cover" />
+                      ) : (
+                        <div className="flex h-32 items-center justify-center bg-slate-200 text-xs text-slate-500">
+                          NO IMAGE
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
               ) : (
                 <p className="text-xs text-slate-500">写真は登録されていません。</p>
               )}

@@ -1,12 +1,18 @@
+export interface PlacePhoto {
+  id: string
+  createdAtISO: string
+  blob?: Blob
+  thumbDataURL?: string
+}
+
 export interface Place {
   id: string
   lat: number
   lng: number
   address: string
   createdAtISO: string
-  photoBlob?: Blob
-  thumbDataURL?: string
   note?: string
+  photos: PlacePhoto[]
 }
 
 export interface RoutePoint {

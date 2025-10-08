@@ -7,7 +7,7 @@ import { useRouteStore } from '../stores/useRouteStore'
 import { useSettingsStore } from '../stores/useSettingsStore'
 import { useToastStore } from '../stores/useToastStore'
 import { hasFirebaseConfig } from '../lib/firebase'
-import type { Place } from '../types'
+import type { Place, PlacePhoto } from '../types'
 
 interface PhotoExportItem {
   id: string
@@ -18,6 +18,7 @@ interface PhotoExportItem {
   previewUrl?: string
   objectUrl?: string
   place: Place
+  photo?: PlacePhoto
 }
 
 export function SettingsPage() {
@@ -106,24 +107,48 @@ export function SettingsPage() {
   }
 
   const preparePhotoExportItems = (source: Place[]): PhotoExportItem[] => {
-    return source.map((place) => {
-      let previewUrl = place.thumbDataURL
-      let objectUrl: string | undefined
-      if (!previewUrl && place.photoBlob) {
-        objectUrl = URL.createObjectURL(place.photoBlob)
-        previewUrl = objectUrl
+    const orderedPlaces = [...source].sort((a, b) => (a.createdAtISO < b.createdAtISO ? -1 : 1))
+    const items: PhotoExportItem[] = []
+
+    orderedPlaces.forEach((place) => {
+      const photos = [...place.photos].sort((a, b) => (a.createdAtISO < b.createdAtISO ? -1 : 1))
+      if (photos.length === 0) {
+        items.push({
+          id: `${place.id}-no-photo`,
+          address: place.address,
+          lat: place.lat,
+          lng: place.lng,
+          note: place.note ?? undefined,
+          previewUrl: undefined,
+          objectUrl: undefined,
+          place,
+          photo: undefined,
+        })
+        return
       }
-      return {
-        id: place.id,
-        address: place.address,
-        lat: place.lat,
-        lng: place.lng,
-        note: place.note ?? undefined,
-        previewUrl,
-        objectUrl,
-        place,
-      }
+
+      photos.forEach((photo, index) => {
+        let previewUrl = photo.thumbDataURL
+        let objectUrl: string | undefined
+        if (!previewUrl && photo.blob) {
+          objectUrl = URL.createObjectURL(photo.blob)
+          previewUrl = objectUrl
+        }
+        items.push({
+          id: `${place.id}-${photo.id}-${index}`,
+          address: place.address,
+          lat: place.lat,
+          lng: place.lng,
+          note: place.note ?? undefined,
+          previewUrl,
+          objectUrl,
+          place,
+          photo,
+        })
+      })
     })
+
+    return items
   }
 
   const createPhotoExportImages = async (items: PhotoExportItem[]) => {
