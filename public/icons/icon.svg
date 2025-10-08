@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="walktraceGradient" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#0ea5e9" />
+      <stop offset="1" stop-color="#0369a1" />
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="120" fill="url(#walktraceGradient)" />
+  <g fill="white" opacity="0.95">
+    <path d="M256 120c-60 0-108 48-108 108 0 89 108 184 108 184s108-95 108-184c0-60-48-108-108-108zm0 156a48 48 0 1 1 0-96 48 48 0 0 1 0 96z" />
+    <path d="M178 362c-52 10-86 31-86 55 0 35 71 63 164 63s164-28 164-63c0-24-34-45-86-55-25 29-52 52-78 52s-53-23-78-52z" opacity="0.8" />
+  </g>
+</svg>

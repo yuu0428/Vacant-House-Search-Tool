@@ -1,0 +1,7 @@
+[mcp_servers.chrome-devtools]
+command = "npx"
+args = ["chrome-devtools-mcp@latest"]
+
+approval_policy = "never"
+network_access = "true"
+safeCommands = ["npm install", "npm run build", "wrangler pages deploy"]
